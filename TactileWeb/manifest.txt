@@ -1,0 +1,4 @@
+# /sdcard/manifest.tt
+name: HTML+JS Touch App
+id: html_js_app
+entry: /sdcard/app.elf

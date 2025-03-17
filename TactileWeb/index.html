@@ -1,0 +1,24 @@
+<game>
+<h1 style="color:blue; font-size:28">Touch Game</h1>
+<div x="50" y="50" style="width:20; height:20; color:red">Ball</div>
+<img src="/sdcard/ball.bmp" style="width:32; height:32">
+<a style="color:blue">Link Text</a>
+<button style="width:60; height:30; background-color:blue">Click Me</button>
+<script>
+let x = 50, y = 50;
+setInterval(() => {
+    let tx = getTouchX(), ty = getTouchY();
+    if (tx > 0 && ty > 0) {
+        x = tx - 10; y = ty - 10;
+        moveObj(x, y);
+    }
+    setColor("red");
+    drawRect(x + 30, y, 10, 10);
+    setBgColor("white");
+}, 16);
+function onButtonClick() {
+    setColor("blue");
+    drawRect(100, 100, 20, 20);
+}
+</script>
+</game>

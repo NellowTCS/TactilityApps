@@ -1,0 +1,36 @@
+name: Build Firmware
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions: read-all
+
+jobs:
+  Calculator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Build"
+        uses: ./.github/actions/build-app
+        with:
+          app_name: Calculator
+  HelloWorld:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Build"
+        uses: ./.github/actions/build-app
+        with:
+          app_name: HelloWorld
+  GraphicsDemo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Build"
+        uses: ./.github/actions/build-app
+        with:
+          app_name: GraphicsDemo
+

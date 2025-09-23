@@ -1,0 +1,17 @@
+.idea/
+.DS_Store
+
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles
+
+sdkconfig
+sdkconfig.old
+
+.vscode/
+.gitpod.yml
+
+.tactility/
+
+dependencies.lock

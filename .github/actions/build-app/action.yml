@@ -1,0 +1,26 @@
+name: Build
+
+inputs:
+  app_name:
+    description: The name of the app directory
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - name: 'Build'
+      uses: espressif/esp-idf-ci-action@v1
+      with:
+        esp_idf_version: v5.5
+        path: './Apps/${{ app_name }}'
+        command: 'tactility.py build'
+    - name: 'Upload Artifact'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ app_name }}
+        path: 'Apps/${{ app_name}}/build/${{ app_name }}.app'
+        retention-days: 30
+

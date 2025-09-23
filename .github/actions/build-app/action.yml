@@ -15,8 +15,8 @@ runs:
       uses: espressif/esp-idf-ci-action@v1
       with:
         esp_idf_version: v5.5
-        path: ./Apps/${{ app_name }}
-        command: 'tactility.py build'
+        path: ./Apps
+        command: 'cd ${{ app_name }} && tactility.py build'
     - name: 'Upload Artifact'
       uses: actions/upload-artifact@v4
       with:

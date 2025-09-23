@@ -1,4 +1,4 @@
-name: Build Firmware
+name: Build App
 on:
   push:
     branches:

@@ -568,11 +568,21 @@ if __name__ == "__main__":
     if len(sys.argv) == 1:
         print_help()
         sys.exit()
+    if "--verbose" in sys.argv:
+        verbose = True
+        sys.argv.remove("--verbose")
+    skip_build = False
+    if "--skip-build" in sys.argv:
+        skip_build = True
+        sys.argv.remove("--skip-build")
+    if "--local-sdk" in sys.argv:
+        use_local_sdk = True
+        sys.argv.remove("--local-sdk")
+    if "--no-animations" in sys.argv:
+        no_animations = True
+        sys.argv.remove("--no-animations")
     action_arg = sys.argv[1]
-    verbose = "--verbose" in sys.argv
-    skip_build = "--skip-build" in sys.argv
-    use_local_sdk = "--local-sdk" in sys.argv
-    no_animations = "--no-animations" in sys.argv
+
     # Environment setup
     setup_environment()
     if not os.path.isfile("manifest.properties"):

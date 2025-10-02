@@ -12,3 +12,4 @@ idf_component_register(
     INCLUDE_DIRS ../../../Libraries/Str/Include
     REQUIRES TactilitySDK
 )
+

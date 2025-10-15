@@ -11,17 +11,14 @@
 constexpr char* TAG = "GPIO";
 
 void Gpio::updatePinStates() {
-    mutex.lock();
     // Update pin states
     for (int i = 0; i < pinStates.size(); ++i) {
         pinStates[i] = tt_hal_gpio_get_level(i);
     }
-    mutex.unlock();
 }
 
 void Gpio::updatePinWidgets() {
     tt_lvgl_lock(TT_MAX_TICKS);
-    assert(pinStates.size() == pinWidgets.size());
     for (int j = 0; j < pinStates.size(); ++j) {
         int level = pinStates[j];
         lv_obj_t* label = pinWidgets[j];
@@ -51,8 +48,11 @@ lv_obj_t* Gpio::createGpioRowWrapper(lv_obj_t* parent) {
 
 void Gpio::onTimer(void* context) {
     Gpio* app = static_cast<Gpio*>(context);
+
+    app->mutex.lock();
     app->updatePinStates();
     app->updatePinWidgets();
+    app->mutex.unlock();
 }
 
 void Gpio::startTask() {
@@ -65,7 +65,6 @@ void Gpio::startTask() {
 
 void Gpio::stopTask() {
     assert(timer);
-
     tt_timer_stop(timer);
     tt_timer_free(timer);
     timer = nullptr;
@@ -164,9 +163,8 @@ void Gpio::onShow(AppHandle app, lv_obj_t* parent) {
 }
 
 void Gpio::onHide(AppHandle app) {
-    stopTask();
-
     mutex.lock();
+    stopTask();
     pinWidgets.clear();
     pinStates.clear();
     mutex.unlock();

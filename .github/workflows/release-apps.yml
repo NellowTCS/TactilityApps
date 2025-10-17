@@ -1,0 +1,16 @@
+name: Release Apps
+on:
+  workflow_run:
+    workflows: ["Build Apps"]
+    types: 
+      - completed
+
+permissions: read-all
+
+jobs:
+  Publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Build"
+        uses: ./.github/actions/release-apps

@@ -16,7 +16,7 @@ jobs:
       - name: "Build"
         uses: ./.github/actions/build-app
         with:
-         app_name: Calculator
+          app_name: Calculator
   Diceware:
     runs-on: ubuntu-latest
     steps:
@@ -28,7 +28,7 @@ jobs:
   GPIO:
     runs-on: ubuntu-latest
     steps:
-     - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
       - name: "Build"
         uses: ./.github/actions/build-app
         with:

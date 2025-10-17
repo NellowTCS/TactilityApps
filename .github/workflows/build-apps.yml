@@ -9,51 +9,21 @@ on:
 permissions: read-all
 
 jobs:
-  Calculator:
+  Build:
+    strategy:
+      matrix:
+        app_name: [Calculator, Diceware, GPIO, GraphicsDemo, HelloWorld, SerialConsole]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: "Build"
         uses: ./.github/actions/build-app
         with:
-          app_name: Calculator
-  Diceware:
+          app_name: ${{ matrix.app_name }}
+  Bundle:
     runs-on: ubuntu-latest
+    needs: [Build]
     steps:
       - uses: actions/checkout@v4
       - name: "Build"
-        uses: ./.github/actions/build-app
-        with:
-          app_name: Diceware
-  GPIO:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: "Build"
-        uses: ./.github/actions/build-app
-        with:
-          app_name: GPIO
-  GraphicsDemo:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: "Build"
-        uses: ./.github/actions/build-app
-        with:
-          app_name: GraphicsDemo
-  HelloWorld:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: "Build"
-        uses: ./.github/actions/build-app
-        with:
-          app_name: HelloWorld
-  SerialConsole:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: "Build"
-        uses: ./.github/actions/build-app
-        with:
-          app_name: SerialConsole
+        uses: ./.github/actions/release-apps

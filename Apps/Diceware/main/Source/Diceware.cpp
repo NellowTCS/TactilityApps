@@ -8,6 +8,8 @@
 #include <esp_random.h>
 #include <esp_log.h>
 
+#include <Tactility/kernel/Kernel.h>
+
 constexpr char* TAG = "Diceware";
 
 static void skipNewlines(FILE* file, const int count) {
@@ -20,15 +22,15 @@ static void skipNewlines(FILE* file, const int count) {
     }
 }
 
-static Str readWord(FILE* file) {
+static std::string readWord(FILE* file) {
     char c;
-    Str result;
+    std::string result;
     // Read word until newline
-    while (fread(&c, 1, 1, file) && c != '\n') { result.append(c); }
+    while (fread(&c, 1, 1, file) && c != '\n') { result += c; }
     return result;
 }
 
-static Str readWordAtLine(const AppHandle handle, const int lineIndex) {
+static std::string readWordAtLine(const AppHandle handle, const int lineIndex) {
     char path[256];
     size_t size = 256;
     tt_app_get_assets_child_path(handle, "eff_large_wordlist.txt", path, &size);
@@ -38,8 +40,8 @@ static Str readWordAtLine(const AppHandle handle, const int lineIndex) {
     }
 
     auto lock = tt_lock_alloc_for_path(path);
-    Str word;
-    if (tt_lock_acquire(lock, TT_MAX_TICKS)) {
+    std::string word;
+    if (tt_lock_acquire(lock, tt::kernel::MAX_TICKS)) {
         FILE* file = fopen(path, "r");
         if (file != nullptr) {
             skipNewlines(file, lineIndex);
@@ -52,25 +54,24 @@ static Str readWordAtLine(const AppHandle handle, const int lineIndex) {
     return word;
 }
 
-int32_t Diceware::jobMain(void* data) {
-    Diceware* application = static_cast<Diceware*>(data);
-    Str result;
-    for (int i = 0; i < application->wordCount; i++) {
+int32_t Diceware::jobMain() {
+    std::string result;
+    for (int i = 0; i < wordCount; i++) {
         constexpr int line_count = 7776;
         const auto line_index = esp_random() % line_count;
-        auto word = readWordAtLine(application->handle, line_index);
-        result.appendf("%s ", word.c_str());
+        auto word = readWordAtLine(handle, line_index);
+        result += word;
+        result += " ";
     }
 
-    application->onFinishJob(result);
+    onFinishJob(result);
 
     return 0;
 }
 
 void Diceware::cleanupJob() {
     if (jobThread != nullptr) {
-        tt_thread_join(jobThread, TT_MAX_TICKS);
-        tt_thread_free(jobThread);
+        jobThread->join();
         jobThread = nullptr;
     }
 }
@@ -79,12 +80,14 @@ void Diceware::startJob(uint32_t jobWordCount) {
     cleanupJob();
 
     wordCount = jobWordCount;
-    jobThread = tt_thread_alloc_ext("Diceware", 4096, jobMain, this);
-    tt_thread_start(jobThread);
+    jobThread = std::make_unique<tt::Thread>("Diceware", 4096, [this] {
+        return jobMain();
+    });
+    jobThread->start();
 }
 
-void Diceware::onFinishJob(Str result) {
-    tt_lvgl_lock(TT_MAX_TICKS);
+void Diceware::onFinishJob(std::string result) {
+    tt_lvgl_lock(tt::kernel::MAX_TICKS);
     lv_label_set_text(resultLabel, result.c_str());
     tt_lvgl_unlock();
 }

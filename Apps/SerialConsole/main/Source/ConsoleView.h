@@ -3,16 +3,15 @@
 #include "View.h"
 #include "esp_log.h"
 
-#include <Str.h>
+#include <string>
 #include <sstream>
 #include <lvgl.h>
 #include <memory>
 
 #include <tt_lvgl.h>
-#include <tt_thread.h>
 
-#include <TactilityCpp/Mutex.h>
-#include <TactilityCpp/Thread.h>
+#include <Tactility/RecursiveMutex.h>
+#include <Tactility/Thread.h>
 #include <TactilityCpp/LvglLock.h>
 
 constexpr size_t receiveBufferSize = 512;
@@ -26,15 +25,15 @@ class ConsoleView final : public View {
     lv_obj_t* _Nullable logTextarea = nullptr;
     lv_obj_t* _Nullable inputTextarea = nullptr;
     std::shared_ptr<Uart> _Nullable uart = nullptr;
-    std::shared_ptr<Thread> uartThread _Nullable = nullptr;
+    std::unique_ptr<tt::Thread> uartThread _Nullable = nullptr;
     bool uartThreadInterrupted = false;
-    std::shared_ptr<Thread> viewThread _Nullable = nullptr;
+    std::unique_ptr<tt::Thread> viewThread _Nullable = nullptr;
     bool viewThreadInterrupted = false;
-    Mutex mutex = Mutex(MutexTypeRecursive);
+    tt::RecursiveMutex mutex;
     uint8_t receiveBuffer[receiveBufferSize];
     uint8_t renderBuffer[renderBufferSize];
     size_t receiveBufferPosition = 0;
-    Str terminatorString = "\n";
+    std::string terminatorString = "\n";
 
     LvglLock lvglLock;
 
@@ -51,11 +50,6 @@ class ConsoleView final : public View {
     }
 
     void updateViews() {
-        auto scoped_lvgl_lock = lvglLock.asScopedLock();
-        if (!scoped_lvgl_lock.lock()) {
-            return;
-        }
-
         if (parent == nullptr) {
             return;
         }
@@ -73,30 +67,27 @@ class ConsoleView final : public View {
             mutex.unlock();
         }
 
-        tt_lvgl_lock(TT_MAX_TICKS);
-        lv_textarea_set_text(logTextarea, (const char*)renderBuffer);
-        tt_lvgl_unlock();
+        if (lvglLock.lock()) {
+            lv_textarea_set_text(logTextarea, (const char*)renderBuffer);
+            lvglLock.unlock();
+        }
     }
 
     int32_t viewThreadMain() {
         while (!isViewThreadInterrupted()) {
-            auto start_time = tt_kernel_get_ticks();
+            auto start_time = tt::kernel::getTicks();
 
             updateViews();
 
-            auto end_time = tt_kernel_get_ticks();
+            auto end_time = tt::kernel::getTicks();
             auto time_diff = end_time - start_time;
-            if (time_diff < 500U) {
-                tt_kernel_delay_ticks((500U - time_diff) / portTICK_PERIOD_MS);
+            auto target_delay = tt::kernel::millisToTicks(500U);
+            if (time_diff < target_delay) {
+                tt::kernel::delayTicks(target_delay - time_diff);
             }
         }
 
         return 0;
-    }
-
-    static int32_t viewThreadMainStatic(void* context) {
-        auto* self = static_cast<ConsoleView*>(context);
-        return self->viewThreadMain();
     }
 
     int32_t uartThreadMain() {
@@ -104,7 +95,7 @@ class ConsoleView final : public View {
 
         while (!isUartThreadInterrupted()) {
             assert(uart != nullptr);
-            bool success = uart->readByte(&byte, 50 / portTICK_PERIOD_MS);
+            bool success = uart->readByte(&byte, tt::kernel::millisToTicks(50));
 
             // Thread might've been interrupted in the meanwhile
             if (isUartThreadInterrupted()) {
@@ -123,11 +114,6 @@ class ConsoleView final : public View {
         }
 
         return 0;
-    }
-
-    static int32_t uartThreadMainStatic(void* view) {
-        auto* self = static_cast<ConsoleView*>(view);
-        return self->uartThreadMain();
     }
 
     static void onSendClickedCallback(lv_event_t* event) {
@@ -156,9 +142,9 @@ class ConsoleView final : public View {
 
     void onSendClicked() {
         mutex.lock();
-        Str input_text = lv_textarea_get_text(inputTextarea);
-        Str to_send;
-        to_send.appendf("%s%s", input_text.c_str(), terminatorString.c_str());
+        std::string input_text = lv_textarea_get_text(inputTextarea);
+        std::string to_send;
+        to_send.append(input_text + terminatorString);
         mutex.unlock();
 
         if (uart != nullptr) {
@@ -181,13 +167,12 @@ public:
         uart = std::move(newUart);
 
         uartThreadInterrupted = false;
-        uartThread = std::make_unique<Thread>(
+        uartThread = std::make_unique<tt::Thread>(
             "SerConsUart",
             4096,
-            uartThreadMainStatic,
-            this
+            [this] { return uartThreadMain(); }
         );
-        uartThread->setPriority(ThreadPriorityHigh);
+        uartThread->setPriority(tt::Thread::Priority::High);
         uartThread->start();
     }
 
@@ -228,13 +213,12 @@ public:
         lv_obj_add_event_cb(button, onSendClickedCallback, LV_EVENT_SHORT_CLICKED, this);
 
         viewThreadInterrupted = false;
-        viewThread = std::make_unique<Thread>(
+        viewThread = std::make_unique<tt::Thread>(
             "SerConsView",
             4096,
-            viewThreadMainStatic,
-            this
+            [this] { return viewThreadMain(); }
         );
-        viewThread->setPriority(ThreadPriorityHigher);
+        viewThread->setPriority(tt::Thread::Priority::Higher);
         viewThread->start();
     }
 
@@ -249,7 +233,7 @@ public:
         // Unlock so thread can lock
         lock.unlock();
 
-        if (old_uart_thread->getState() != ThreadStateStopped) {
+        if (old_uart_thread->getState() != tt::Thread::State::Stopped) {
             // Wait for thread to finish
             old_uart_thread->join();
         }
@@ -267,7 +251,7 @@ public:
         // Unlock so thread can lock
         lock.unlock();
 
-        if (old_view_thread->getState() != ThreadStateStopped) {
+        if (old_view_thread->getState() != tt::Thread::State::Stopped) {
             // Wait for thread to finish
             old_view_thread->join();
         }

@@ -17,7 +17,7 @@ To add a new app developed within this repository:
 To integrate an external app from a separate repository:
 
 1. Create a new directory under `Apps/`.
-2. Add a `fetch.properties` file with the app's configuration.
+2. Add a `fetch.properties` file with the app's configuration. It is *highly* recommended to lock the app to a specific commit for security reasons.
 3. The CI system will automatically fetch, build, and include the app.
 
 See [Documentation/external-apps.md](Documentation/external-apps.md) for detailed instructions.

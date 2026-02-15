@@ -18,7 +18,7 @@ jobs:
   Build:
     strategy:
       matrix:
-        app_name: [Calculator, Diceware, GPIO, GraphicsDemo, HelloWorld, SerialConsole, TwoEleven, TamaTac, MystifyDemo, Snake, Clock]
+        app_name: [Calculator, Diceware, GPIO, GraphicsDemo, HelloWorld, SerialConsole, TwoEleven, TamaTac, MystifyDemo, Snake]
     runs-on: ubuntu-latest
     needs: [Fetch]
     steps:

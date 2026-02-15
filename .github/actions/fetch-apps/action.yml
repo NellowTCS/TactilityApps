@@ -12,4 +12,4 @@ runs:
         path: .
         command: |
           pip install tuiro
-          python3 fetch_external_apps.py
+          python3 fetch_external_apps.py --ci

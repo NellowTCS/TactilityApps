@@ -4,13 +4,19 @@ import configparser
 import shutil
 import sys
 import tuiro
+import argparse
 
-tui = tuiro.TUI()
+def parse_args():
+    parser = argparse.ArgumentParser(description="Fetch external apps and optionally enable CI mode for TUI output.")
+    parser.add_argument('--ci', action='store_true', help='Enable CI mode for TUI')
+    return parser.parse_args()
+
+args = parse_args()
+tui = tuiro.TUI(ci_mode=args.ci)
 
 APPS_DIR = os.path.join(os.path.dirname(__file__), 'Apps')
 
 # Helper to parse fetch.properties
-
 def parse_properties(path):
     config = configparser.ConfigParser()
     try:

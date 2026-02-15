@@ -140,6 +140,12 @@ if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Missing argument")
         sys.exit()
+    # Fetch external apps before releasing
+    import subprocess
+    fetch_script = os.path.join(os.path.dirname(__file__), 'fetch_external_apps.py')
+    if os.path.isfile(fetch_script):
+        print("Fetching external apps...")
+        subprocess.run([sys.executable, fetch_script], check=True)
     app_directory = sys.argv[1]
     manifest_map = {}
     output_json = {

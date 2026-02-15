@@ -9,11 +9,20 @@ on:
 permissions: read-all
 
 jobs:
+  Fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Install dependencies"
+        run: pip install tuiro
+      - name: "Fetch external apps"
+        run: python3 fetch_external_apps.py
   Build:
     strategy:
       matrix:
-        app_name: [Calculator, Diceware, GPIO, GraphicsDemo, HelloWorld, SerialConsole, TwoEleven, TamaTac, MystifyDemo, Snake]
+        app_name: [Calculator, Diceware, GPIO, GraphicsDemo, HelloWorld, SerialConsole, TwoEleven, TamaTac, MystifyDemo, Snake, Clock]
     runs-on: ubuntu-latest
+    needs: [Fetch]
     steps:
       - uses: actions/checkout@v4
       - name: "Build"

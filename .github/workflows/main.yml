@@ -12,7 +12,9 @@ jobs:
   Fetch:
     runs-on: ubuntu-latest
     steps:
-      - uses: ./.github/actions/fetch-apps
+      - uses: actions/checkout@v4
+      - name: "Fetch"
+        uses: ./.github/actions/fetch-apps
   Build:
     strategy:
       matrix:

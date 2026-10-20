@@ -55,6 +55,26 @@ bool storageAssetPath(const char* fileName, char* out, size_t outSize) {
     return app_paths_get_assets_path(APP_ID, fileName, out, outSize) == ERROR_NONE;
 }
 
+char* storageReadAsset(const char* fileName) {
+    char path[256];
+    if (!storageAssetPath(fileName, path, sizeof(path))) return nullptr;
+    FILE* file = fopen(path, "rb");
+    if (file == nullptr) return nullptr;
+    char* text = nullptr;
+    long size = fseek(file, 0, SEEK_END) == 0 ? ftell(file) : -1;
+    if (size >= 0 && fseek(file, 0, SEEK_SET) == 0) {
+        text = static_cast<char*>(largeAlloc((size_t)size + 1));
+        if (text != nullptr && fread(text, 1, (size_t)size, file) == (size_t)size) {
+            text[size] = '\0';
+        } else {
+            largeFree(text);
+            text = nullptr;
+        }
+    }
+    fclose(file);
+    return text;
+}
+
 void settingsLoad(Settings& settings) {
     char path[256];
     if (!storageUserPath(SETTINGS_FILE, path, sizeof(path))) return;
@@ -70,6 +90,13 @@ void settingsLoad(Settings& settings) {
     preferences_opt_bool(preferences, "autoSelect", &settings.autoSelectPass);
     preferences_opt_bool(preferences, "hideToolbar", &settings.hideToolbar);
     preferences_opt_bool(preferences, "useDeviceLoc", &settings.useDeviceLocation);
+    int32_t deviceLatMicro = 0, deviceLonMicro = 0, deviceAltM = 0;
+    if (preferences_opt_int32(preferences, "devLatMicro", &deviceLatMicro) && preferences_opt_int32(preferences, "devLonMicro", &deviceLonMicro)) {
+        settings.lastDeviceSet = true;
+        settings.lastDeviceLatDeg = deviceLatMicro / 1.0e6;
+        settings.lastDeviceLonDeg = deviceLonMicro / 1.0e6;
+        if (preferences_opt_int32(preferences, "devAltM", &deviceAltM)) settings.lastDeviceAltM = deviceAltM;
+    }
     preferences_opt_int64(preferences, "lastRefresh", &settings.lastTrackedRefresh);
     preferences_close(preferences);
 }
@@ -89,6 +116,11 @@ void settingsSave(const Settings& settings) {
     preferences_put_bool(preferences, "autoSelect", settings.autoSelectPass);
     preferences_put_bool(preferences, "hideToolbar", settings.hideToolbar);
     preferences_put_bool(preferences, "useDeviceLoc", settings.useDeviceLocation);
+    if (settings.lastDeviceSet) {
+        preferences_put_int32(preferences, "devLatMicro", (int32_t)(settings.lastDeviceLatDeg * 1.0e6));
+        preferences_put_int32(preferences, "devLonMicro", (int32_t)(settings.lastDeviceLonDeg * 1.0e6));
+        preferences_put_int32(preferences, "devAltM", (int32_t)settings.lastDeviceAltM);
+    }
     preferences_put_int64(preferences, "lastRefresh", settings.lastTrackedRefresh);
     preferences_close(preferences);
 }
@@ -129,21 +161,34 @@ bool trackedLoad(TrackerModel& model) {
     return true;
 }
 
-void trackedListSave(const TrackerModel& model) {
+void savedListFromModel(const TrackerModel& model, SavedList& out) {
+    out.count = model.count() < MAX_TRACKED ? model.count() : MAX_TRACKED;
+    for (int i = 0; i < out.count; i++) {
+        const TrackedSatellite& entry = model.at(i);
+        SavedSatellite& saved = out.entries[i];
+        saved.catalogNumber = entry.catalogNumber;
+        saved.slot = entry.slot;
+        memcpy(saved.shortName, entry.shortName, sizeof(saved.shortName));
+        saved.hasOrbit = entry.hasOrbit;
+        saved.tle = entry.tle;
+    }
+}
+
+void trackedListSave(const SavedList& list) {
     FILE* file = openUserFile(LIST_FILE);
     if (file == nullptr) return;
-    for (int i = 0; i < model.count(); i++) {
-        const TrackedSatellite& entry = model.at(i);
+    for (int i = 0; i < list.count; i++) {
+        const SavedSatellite& entry = list.entries[i];
         fprintf(file, "%u|%d|%s\n", (unsigned)entry.catalogNumber, entry.slot, entry.shortName);
     }
     fclose(file);
 }
 
-void orbitCacheSave(const TrackerModel& model) {
+void orbitCacheSave(const SavedList& list) {
     FILE* file = openUserFile(ORBIT_FILE);
     if (file == nullptr) return;
-    for (int i = 0; i < model.count(); i++) {
-        const TrackedSatellite& entry = model.at(i);
+    for (int i = 0; i < list.count; i++) {
+        const SavedSatellite& entry = list.entries[i];
         if (!entry.hasOrbit) continue;
         fprintf(file, "%s\n%.69s\n%.69s\n", entry.tle.name, entry.tle.line1, entry.tle.line2);
     }

@@ -113,7 +113,7 @@ void onSaveClicked(lv_event_t* event) {
         settings.longitudeDeg = longitude;
         settings.altitudeM = altitude;
     }
-    settingsSave(settings);
+    requestTaskWork(ctx, TASK_WORK_SETTINGS);
     applyObserver(ctx);
     ctx->forceRedraw = true;
     setLabelText(ctx->messageLabel, "Saved.");
@@ -122,7 +122,7 @@ void onSaveClicked(lv_event_t* event) {
 void onTracksChanged(lv_event_t* event) {
     auto* ctx = static_cast<Context*>(lv_event_get_user_data(event));
     ctx->settings.tracksForAll = lv_obj_has_state(widgets.tracksSwitch, LV_STATE_CHECKED);
-    settingsSave(ctx->settings);
+    requestTaskWork(ctx, TASK_WORK_SETTINGS);
     ctx->forceRedraw = true;
 }
 
@@ -135,6 +135,8 @@ void describeDeviceLocation(Context* ctx, char* out, size_t outSize) {
         const orbit::Geodetic& fix = ctx->deviceFix;
         snprintf(out, outSize, "Using the device location: %.3f\xC2\xB0%s %.3f\xC2\xB0%s (\xC2\xB1%.0f m, %s).", fix.latDeg < 0 ? -fix.latDeg : fix.latDeg,
                  fix.latDeg >= 0 ? "N" : "S", fix.lonDeg < 0 ? -fix.lonDeg : fix.lonDeg, fix.lonDeg >= 0 ? "E" : "W", ctx->deviceAccuracyM, ctx->deviceProvider);
+    } else if (ctx->settings.lastDeviceSet) {
+        snprintf(out, outSize, "Waiting for the device location, its last known position is used until then.");
     } else {
         snprintf(out, outSize, "Waiting for the device location, the location below is used until then.");
     }
@@ -143,7 +145,7 @@ void describeDeviceLocation(Context* ctx, char* out, size_t outSize) {
 void onDeviceLocationChanged(lv_event_t* event) {
     auto* ctx = static_cast<Context*>(lv_event_get_user_data(event));
     ctx->settings.useDeviceLocation = lv_obj_has_state(lv_event_get_target_obj(event), LV_STATE_CHECKED);
-    settingsSave(ctx->settings);
+    requestTaskWork(ctx, TASK_WORK_SETTINGS);
     applyObserver(ctx);
     ctx->forceRedraw = true;
     settingsViewUpdate(ctx);
@@ -152,7 +154,7 @@ void onDeviceLocationChanged(lv_event_t* event) {
 void onAutoSelectChanged(lv_event_t* event) {
     auto* ctx = static_cast<Context*>(lv_event_get_user_data(event));
     ctx->settings.autoSelectPass = lv_obj_has_state(widgets.autoSwitch, LV_STATE_CHECKED);
-    settingsSave(ctx->settings);
+    requestTaskWork(ctx, TASK_WORK_SETTINGS);
     ctx->forceRedraw = true;
 }
 

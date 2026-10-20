@@ -33,10 +33,31 @@ struct TrackedSatellite {
     orbit::PassSearchResult passResult = orbit::PassSearchResult::None;
     orbit::Pass nextPass {};
     int64_t passSearchedAt = 0;
+    /** True once passResult belongs to the current orbit data and observer. */
+    bool passKnown = false;
+    /** Unique for every new orbit data in the model, so a pass search with older data is dropped. */
+    uint32_t orbitVersion = 0;
 
     /** Download state, not saved: failed attempts and the earliest time of the next attempt for missing orbit data. */
     int downloadFailures = 0;
     int64_t retryAt = 0;
+};
+
+/** Pass searches that run outside the LVGL lock, see TrackerModel::collectPassJobs(). */
+struct PassJob {
+    uint32_t catalogNumber;
+    uint32_t orbitVersion;
+    orbit::Tle tle;
+    orbit::PassSearchResult result;
+    orbit::Pass pass;
+};
+
+struct PassJobs {
+    int count = 0;
+    PassJob jobs[MAX_TRACKED] {};
+    orbit::Geodetic observer {};
+    uint32_t observerVersion = 0;
+    int64_t startTime = 0;
 };
 
 class TrackerModel {
@@ -65,12 +86,23 @@ public:
     void setObserver(bool available, const orbit::Geodetic& location);
     bool hasObserver() const { return observerAvailable; }
     const orbit::Geodetic& observer() const { return observerLocation; }
+    /** Changes with every new observer location. */
+    uint32_t observerChanges() const { return observerVersion; }
 
     void updatePositions(double unixTime);
 
     /** Searches passes that ended or are missing. Returns true when anything changed. */
     bool updatePasses(int64_t unixTime, int64_t searchSeconds);
     void invalidatePasses();
+
+    /** True when a pass is missing or over. */
+    bool passesStale(int64_t unixTime) const;
+    /** Copies the stale satellites into jobs and marks them as searched. Returns false when there is nothing to search. */
+    bool collectPassJobs(int64_t unixTime, PassJobs& out);
+    /** Searches the passes of the jobs. Uses only the jobs, so it can run without the lock that guards the model. */
+    static void runPassJobs(PassJobs& jobs, int64_t searchSeconds);
+    /** Stores the results whose orbit data and observer did not change since they were collected. Returns true when any was stored. */
+    bool applyPassJobs(const PassJobs& jobs);
 
     void buildScene(double unixTime, int focusedIndex, bool tracksForAll, map::Scene& out);
 
@@ -81,10 +113,13 @@ private:
 
     int freeSlot() const;
     bool slotUsed(int slot) const;
+    bool passStale(const TrackedSatellite& entry, int64_t unixTime) const;
 
     std::array<std::unique_ptr<TrackedSatellite>, MAX_TRACKED> satellites;
     int satelliteCount = 0;
     int trackedLimit = DEFAULT_TRACKED_LIMIT;
     bool observerAvailable = false;
     orbit::Geodetic observerLocation {};
+    uint32_t observerVersion = 0;
+    uint32_t orbitVersions = 0;
 };

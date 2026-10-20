@@ -95,6 +95,8 @@ bool TrackerModel::setTle(int index, const orbit::Tle& tle) {
     entry.hasOrbit = true;
     entry.passResult = orbit::PassSearchResult::None;
     entry.passSearchedAt = 0;
+    entry.passKnown = false;
+    entry.orbitVersion = ++orbitVersions;
     return true;
 }
 
@@ -102,7 +104,10 @@ void TrackerModel::setObserver(bool available, const orbit::Geodetic& location) 
     bool changed = available != observerAvailable || location.latDeg != observerLocation.latDeg || location.lonDeg != observerLocation.lonDeg;
     observerAvailable = available;
     observerLocation = location;
-    if (changed) invalidatePasses();
+    if (changed) {
+        observerVersion++;
+        invalidatePasses();
+    }
 }
 
 void TrackerModel::updatePositions(double unixTime) {
@@ -120,26 +125,78 @@ void TrackerModel::updatePositions(double unixTime) {
     }
 }
 
-bool TrackerModel::updatePasses(int64_t unixTime, int64_t searchSeconds) {
+bool TrackerModel::passStale(const TrackedSatellite& entry, int64_t unixTime) const {
+    if (!entry.hasOrbit) return false;
+    if (entry.passSearchedAt == 0) return true;
+    if (entry.passResult == orbit::PassSearchResult::Found) return entry.nextPass.setTime < unixTime;
+    return unixTime - entry.passSearchedAt > 3600;
+}
+
+bool TrackerModel::passesStale(int64_t unixTime) const {
     if (!observerAvailable) return false;
-    bool changed = false;
+    for (int i = 0; i < satelliteCount; i++) {
+        if (passStale(*satellites[i], unixTime)) return true;
+    }
+    return false;
+}
+
+bool TrackerModel::collectPassJobs(int64_t unixTime, PassJobs& out) {
+    out.count = 0;
+    if (!observerAvailable) return false;
+    out.observer = observerLocation;
+    out.observerVersion = observerVersion;
+    out.startTime = unixTime;
     for (int i = 0; i < satelliteCount; i++) {
         TrackedSatellite& entry = *satellites[i];
-        if (!entry.hasOrbit) continue;
-        bool stale = entry.passSearchedAt == 0;
-        if (entry.passResult == orbit::PassSearchResult::Found && entry.nextPass.setTime < unixTime) stale = true;
-        if (entry.passResult != orbit::PassSearchResult::Found && unixTime - entry.passSearchedAt > 3600) stale = true;
-        if (!stale) continue;
-        entry.passResult = entry.propagator.findNextPass(observerLocation, unixTime, searchSeconds, MIN_PASS_ELEVATION_DEG, entry.nextPass);
+        if (!passStale(entry, unixTime)) continue;
+        PassJob& job = out.jobs[out.count++];
+        job.catalogNumber = entry.catalogNumber;
+        job.orbitVersion = entry.orbitVersion;
+        job.tle = entry.tle;
         entry.passSearchedAt = unixTime;
-        changed = true;
     }
-    return changed;
+    return out.count > 0;
+}
+
+void TrackerModel::runPassJobs(PassJobs& jobs, int64_t searchSeconds) {
+    auto propagator = std::make_unique<orbit::Satellite>();
+    for (int i = 0; i < jobs.count; i++) {
+        PassJob& job = jobs.jobs[i];
+        job.pass = orbit::Pass {};
+        job.result = propagator->init(job.tle)
+            ? propagator->findNextPass(jobs.observer, jobs.startTime, searchSeconds, MIN_PASS_ELEVATION_DEG, job.pass)
+            : orbit::PassSearchResult::Error;
+    }
+}
+
+bool TrackerModel::applyPassJobs(const PassJobs& jobs) {
+    if (jobs.observerVersion != observerVersion) return false;
+    bool stored = false;
+    for (int i = 0; i < jobs.count; i++) {
+        const PassJob& job = jobs.jobs[i];
+        int index = indexOfCatalog(job.catalogNumber);
+        if (index < 0) continue;
+        TrackedSatellite& entry = *satellites[index];
+        if (entry.orbitVersion != job.orbitVersion) continue;
+        entry.passResult = job.result;
+        entry.nextPass = job.pass;
+        entry.passKnown = true;
+        stored = true;
+    }
+    return stored;
+}
+
+bool TrackerModel::updatePasses(int64_t unixTime, int64_t searchSeconds) {
+    PassJobs jobs;
+    if (!collectPassJobs(unixTime, jobs)) return false;
+    runPassJobs(jobs, searchSeconds);
+    return applyPassJobs(jobs);
 }
 
 void TrackerModel::invalidatePasses() {
     for (int i = 0; i < satelliteCount; i++) {
         satellites[i]->passSearchedAt = 0;
+        satellites[i]->passKnown = false;
     }
 }
 

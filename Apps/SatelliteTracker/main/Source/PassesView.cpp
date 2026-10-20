@@ -1,12 +1,13 @@
 #include "SatelliteTracker.h"
 
 #include <lvgl/fonts.h>
+#include <lvgl/lvgl.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
-#include <vector>
+#include <memory>
 
 namespace {
 
@@ -14,17 +15,11 @@ constexpr int64_t PASS_LIST_SECONDS = 24 * 3600;
 constexpr size_t MAX_ROWS = 40;
 constexpr int MAX_PASSES_PER_SATELLITE = 10;
 
-struct PassRow {
-    int index;
-    orbit::Pass pass;
-    bool visible;
-};
-
 /** The satellite is in sunlight while the observer has a dark sky (sun at least 6 degrees below the horizon). */
-bool isVisiblePass(TrackedSatellite& entry, const orbit::Geodetic& observer, const orbit::Pass& pass) {
+bool isVisiblePass(orbit::Satellite& propagator, const orbit::Geodetic& observer, const orbit::Pass& pass) {
     double t = (double)pass.maxTime;
     orbit::Vec3 r, v;
-    if (!entry.propagator.positionEci(t, r, v) || !orbit::isSunlit(r, t)) return false;
+    if (!propagator.positionEci(t, r, v) || !orbit::isSunlit(r, t)) return false;
     orbit::Geodetic sun = orbit::subsolarPoint(t);
     const double deg = 3.14159265358979323846 / 180.0;
     double sunHeight = std::sin(observer.latDeg * deg) * std::sin(sun.latDeg * deg) +
@@ -39,6 +34,60 @@ void addMessage(Context* ctx, const char* text) {
     lv_label_set_text(label, text);
 }
 
+}
+
+void satelliteTrackerBuildPassList(Context* ctx) {
+    if (!timeIsValid()) return;
+    PassJobs& jobs = ctx->passListJobs;
+    lvgl_lock();
+    bool hasObserver = ctx->model.hasObserver();
+    jobs.count = 0;
+    jobs.observer = ctx->model.observer();
+    jobs.observerVersion = ctx->model.observerChanges();
+    jobs.startTime = currentTime();
+    for (int i = 0; i < ctx->model.count(); i++) {
+        const TrackedSatellite& entry = ctx->model.at(i);
+        if (!entry.hasOrbit) continue;
+        PassJob& job = jobs.jobs[jobs.count++];
+        job.catalogNumber = entry.catalogNumber;
+        job.tle = entry.tle;
+    }
+    lvgl_unlock();
+
+    PassList list;
+    if (hasObserver) {
+        auto propagator = std::make_unique<orbit::Satellite>();
+        int64_t now = jobs.startTime;
+        for (int i = 0; i < jobs.count; i++) {
+            const PassJob& job = jobs.jobs[i];
+            if (!propagator->init(job.tle)) continue;
+            int64_t t = now;
+            for (int n = 0; n < MAX_PASSES_PER_SATELLITE && t < now + PASS_LIST_SECONDS; n++) {
+                orbit::Pass pass;
+                auto result = propagator->findNextPass(jobs.observer, t, now + PASS_LIST_SECONDS - t, MIN_PASS_ELEVATION_DEG, pass);
+                if (result == orbit::PassSearchResult::AlwaysUp) {
+                    list.alwaysUp.push_back(job.catalogNumber);
+                    break;
+                }
+                if (result != orbit::PassSearchResult::Found) break;
+                list.rows.push_back(PassListRow { job.catalogNumber, pass, isVisiblePass(*propagator, jobs.observer, pass) });
+                t = pass.setTime + 60;
+            }
+        }
+        std::sort(list.rows.begin(), list.rows.end(), [](const PassListRow& a, const PassListRow& b) { return a.pass.riseTime < b.pass.riseTime; });
+        if (list.rows.size() > MAX_ROWS) list.rows.resize(MAX_ROWS);
+    }
+
+    lvgl_lock();
+    if (jobs.observerVersion != ctx->model.observerChanges()) {
+        requestTaskWork(ctx, TASK_WORK_PASS_LIST);
+    } else {
+        ctx->passList.rows.swap(list.rows);
+        ctx->passList.alwaysUp.swap(list.alwaysUp);
+        ctx->passList.ready = true;
+        if (ctx->pendingView == View::Passes) showView(ctx, View::Passes);
+    }
+    lvgl_unlock();
 }
 
 void passesViewCreate(Context* ctx) {
@@ -57,43 +106,30 @@ void passesViewCreate(Context* ctx) {
         addMessage(ctx, "No satellites are tracked yet.");
         return;
     }
+    if (!ctx->passList.ready) {
+        addMessage(ctx, "Finding passes...");
+        return;
+    }
 
-    int64_t now = currentTime();
-    const orbit::Geodetic& observer = ctx->model.observer();
-    std::vector<PassRow> rows;
-    std::vector<int> alwaysUp;
     int withoutOrbit = 0;
     for (int i = 0; i < ctx->model.count(); i++) {
-        TrackedSatellite& entry = ctx->model.at(i);
-        if (!entry.hasOrbit) {
-            withoutOrbit++;
-            continue;
-        }
-        int64_t t = now;
-        for (int n = 0; n < MAX_PASSES_PER_SATELLITE && t < now + PASS_LIST_SECONDS; n++) {
-            orbit::Pass pass;
-            auto result = entry.propagator.findNextPass(observer, t, now + PASS_LIST_SECONDS - t, MIN_PASS_ELEVATION_DEG, pass);
-            if (result == orbit::PassSearchResult::AlwaysUp) {
-                alwaysUp.push_back(i);
-                break;
-            }
-            if (result != orbit::PassSearchResult::Found) break;
-            rows.push_back(PassRow { i, pass, isVisiblePass(entry, observer, pass) });
-            t = pass.setTime + 60;
-        }
+        if (!ctx->model.at(i).hasOrbit) withoutOrbit++;
     }
-    std::sort(rows.begin(), rows.end(), [](const PassRow& a, const PassRow& b) { return a.pass.riseTime < b.pass.riseTime; });
-    if (rows.size() > MAX_ROWS) rows.resize(MAX_ROWS);
 
     bool compact = lv_obj_get_content_width(ctx->content) < 400;
     const lv_font_t* font = lvgl_get_text_font(compact ? FONT_SIZE_SMALL : FONT_SIZE_DEFAULT);
-    time_t nowValue = (time_t)now;
+    time_t nowValue = (time_t)currentTime();
     struct tm nowTm {};
     localtime_r(&nowValue, &nowTm);
     bool anyVisible = false;
+    bool anyShown = false;
 
-    for (int index : alwaysUp) {
+    for (uint32_t catalogNumber : ctx->passList.alwaysUp) {
+        // The satellite may have been removed since the list was built.
+        int index = ctx->model.indexOfCatalog(catalogNumber);
+        if (index < 0) continue;
         const TrackedSatellite& entry = ctx->model.at(index);
+        anyShown = true;
         lv_obj_t* row = lv_obj_create(ctx->content);
         lv_obj_remove_style_all(row);
         lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
@@ -108,8 +144,11 @@ void passesViewCreate(Context* ctx) {
         lv_label_set_text(label, text);
     }
 
-    for (const auto& item : rows) {
-        const TrackedSatellite& entry = ctx->model.at(item.index);
+    for (const auto& item : ctx->passList.rows) {
+        int index = ctx->model.indexOfCatalog(item.catalogNumber);
+        if (index < 0) continue;
+        const TrackedSatellite& entry = ctx->model.at(index);
+        anyShown = true;
         char rise[8], set[8], day[8] = "";
         formatClock(item.pass.riseTime, rise, sizeof(rise));
         formatClock(item.pass.setTime, set, sizeof(set));
@@ -141,7 +180,7 @@ void passesViewCreate(Context* ctx) {
         lv_label_set_text(label, text);
     }
 
-    if (rows.empty() && alwaysUp.empty()) {
+    if (!anyShown) {
         addMessage(ctx, "No passes higher than 5° in the next 24 hours.");
     } else if (anyVisible) {
         lv_obj_t* note = lv_label_create(ctx->content);

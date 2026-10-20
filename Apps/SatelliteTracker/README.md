@@ -7,7 +7,7 @@ Orbit data comes from [CelesTrak](https://celestrak.org) and the positions are c
 
 - **Clock:** the positions depend on the time, so the clock must be set. Connect to Wi-Fi once so Tactility can sync the time. Until then the map shows no satellites and the info line says that the clock is not set.
 - **Wi-Fi:** needed to download orbit data, groups and search results. Without it the app keeps working with the data it downloaded before. Satellites without any orbit data yet (for example on the first start) are listed but not shown on the map until their data arrives.
-- **Location:** the app follows Tactility's location services (GPS or network based) when they are turned on in Tactility's settings and have a fix. Otherwise it uses the location from the app's settings, which is New York City until you enter your own. If you clear that location and there is no device location, there are no pass predictions, no elevation values and no automatic selection of the next pass.
+- **Location:** the app follows Tactility's location services (GPS or network based) when they are turned on in Tactility's settings and have a fix. Until the first fix after a start it uses the last device location, so the passes and the automatic selection do not change a few seconds after the start. Otherwise it uses the location from the app's settings, which is New York City until you enter your own. If you clear that location and there is no device location, there are no pass predictions, no elevation values and no automatic selection of the next pass.
 
 ## Map screen
 
@@ -38,7 +38,7 @@ The selected satellite has a solid frame, a satellite selected automatically has
 ### Info area
 
 - Name, catalog number, position, altitude, speed and whether the satellite is sunlit or in Earth's shadow. For a satellite without a position it says that its orbit data is still missing or can no longer be used.
-- The pass: above the horizon now (elevation, direction, set time), the next pass (start and end time, highest elevation, rise and set direction, "tomorrow" when it is on the next day, the weekday when it is later), always above the horizon (geostationary satellites), no pass higher than 5 degrees in 36 hours, or "Set location in settings".
+- The pass: above the horizon now (elevation, direction, set time), the next pass (start and end time, highest elevation, rise and set direction, "tomorrow" when it is on the next day, the weekday when it is later), always above the horizon (geostationary satellites), no pass higher than 5 degrees in 36 hours, "Set location in settings", or "Finding the next pass..." for the few seconds the search takes after the start or a new location.
 - The status line: when the map was updated and how old the orbit data is, or a message while downloading or after a failed download. When the clock was moved back after a download, the age is unknown and not shown.
 
 ### Layout
@@ -77,7 +77,7 @@ The map, legend and info area are updated every 5 seconds on color screens and e
 
 ## Next passes screen
 
-The calendar button lists the passes of all tracked satellites over your location in the next 24 hours, sorted by time.
+The calendar button lists the passes of all tracked satellites over your location in the next 24 hours, sorted by time. The list is computed in the background, "Finding passes..." is shown meanwhile.
 
 - Each row shows the start and end time, the highest elevation, the rise and set direction and the satellite. Passes on the next day show the weekday.
 - Passes lower than 5 degrees are skipped. At most 10 passes per satellite and 40 rows are listed.

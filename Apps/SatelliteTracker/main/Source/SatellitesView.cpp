@@ -10,6 +10,11 @@ namespace {
 
 constexpr size_t MAX_CATALOG_ROWS = 250;
 
+/** Also frees the memory, so the next list does not need room next to the old one. */
+void clearCatalog(Context* ctx) {
+    TleList().swap(ctx->catalog);
+}
+
 struct Group {
     const char* id;
     const char* name;
@@ -83,8 +88,9 @@ void onAddFromGroupClicked(lv_event_t* event) {
 
 void onSearchClicked(lv_event_t* event) {
     auto* ctx = static_cast<Context*>(lv_event_get_user_data(event));
-    ctx->catalog.clear();
+    clearCatalog(ctx);
     ctx->catalogLoading = false;
+    ctx->catalogReading = false;
     showView(ctx, View::Search);
 }
 
@@ -94,7 +100,10 @@ void onGroupClicked(lv_event_t* event) {
     const Group& group = GROUPS[action->index];
     snprintf(ctx->selectedGroup, sizeof(ctx->selectedGroup), "%s", group.id);
     snprintf(ctx->selectedGroupName, sizeof(ctx->selectedGroupName), "%s", group.name);
-    ctx->catalog.clear();
+    clearCatalog(ctx);
+    ctx->catalogLoading = false;
+    ctx->catalogReading = true;
+    requestTaskWork(ctx, TASK_WORK_GROUP);
     showView(ctx, View::GroupList);
 }
 
@@ -145,7 +154,7 @@ void startSearch(Context* ctx) {
         setLabelText(ctx->messageLabel, "Downloads are not available. Restart the app.");
         return;
     }
-    ctx->catalog.clear();
+    clearCatalog(ctx);
     ctx->catalogLoading = true;
     catalogViewRefresh(ctx);
 }
@@ -165,7 +174,7 @@ void onRenameSave(lv_event_t* event) {
         } else if (entry.hasOrbit) {
             TrackerModel::makeShortName(entry.tle.name, entry.shortName, sizeof(entry.shortName));
         }
-        trackedListSave(ctx->model);
+        requestTaskWork(ctx, TASK_WORK_LIST);
         ctx->forceRedraw = true;
     }
     showView(ctx, View::Satellites);
@@ -266,27 +275,6 @@ void groupListViewCreate(Context* ctx) {
     lv_obj_set_style_pad_row(ctx->content, 4, 0);
     addMessage(ctx, ctx->content, "");
     ctx->listWidget = createColumn(ctx->content);
-
-    char name[48], path[256];
-    snprintf(name, sizeof(name), "group-%s.tle", ctx->selectedGroup);
-    int64_t age = storageUserPath(name, path, sizeof(path)) ? fileAgeSeconds(path, currentTime()) : -1;
-    bool fresh = age >= 0 && (age < GROUP_CACHE_SECONDS || !timeIsValid());
-    ctx->catalogLoading = false;
-    if (fresh) {
-        tleFileRead(path, ctx->catalog, ctx->groupLimit);
-        sortByName(ctx->catalog);
-    }
-    if (!fresh || ctx->catalog.empty()) {
-        DownloadJob job;
-        bool queued = timeIsValid() && Downloader::buildGroupJob(ctx->selectedGroup, job) &&
-            (ctx->downloader.hasQueued(DownloadKind::Group, job.tag) || ctx->downloader.enqueue(job));
-        if (queued) {
-            ctx->catalogLoading = true;
-        } else if (age >= 0) {
-            tleFileRead(path, ctx->catalog, ctx->groupLimit);
-            sortByName(ctx->catalog);
-        }
-    }
     catalogViewRefresh(ctx);
 }
 
@@ -323,6 +311,10 @@ void catalogViewRefresh(Context* ctx) {
 
     if (ctx->catalogLoading) {
         setLabelText(ctx->messageLabel, "Downloading from CelesTrak...");
+        return;
+    }
+    if (ctx->catalogReading) {
+        setLabelText(ctx->messageLabel, "Loading...");
         return;
     }
     if (ctx->catalog.empty()) {

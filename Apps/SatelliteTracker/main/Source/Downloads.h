@@ -36,6 +36,7 @@ class Downloader {
 
 public:
 
+    /** Main task only: reads the certificate file. */
     bool init(TaskEventGroup* eventGroup);
     void deinit();
 
@@ -60,5 +61,6 @@ private:
     bool running = false;
     DownloadJob current {};
     HttpDownloadSubscription subscription {};
-    char certificatePath[200] {};
+    /** PEM text of the CelesTrak root certificate. */
+    char* certificate = nullptr;
 };

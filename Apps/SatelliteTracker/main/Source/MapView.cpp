@@ -98,6 +98,15 @@ void onLegendClicked(lv_event_t* event) {
     toggleFocus(click->ctx, click->index);
 }
 
+/** A satellite with orbit data has no pass result yet, the search runs in the background. */
+bool passSearchPending(const Context* ctx) {
+    for (int i = 0; i < ctx->model.count(); i++) {
+        const TrackedSatellite& entry = ctx->model.at(i);
+        if (entry.hasOrbit && !entry.passKnown) return true;
+    }
+    return false;
+}
+
 /** The tracked satellite whose pass is in progress or starts first. */
 int pickNextPass(Context* ctx) {
     if (!ctx->model.hasObserver()) return -1;
@@ -105,7 +114,7 @@ int pickNextPass(Context* ctx) {
     int64_t bestRise = 0;
     for (int i = 0; i < ctx->model.count(); i++) {
         const TrackedSatellite& entry = ctx->model.at(i);
-        if (entry.passResult != orbit::PassSearchResult::Found) continue;
+        if (!entry.passKnown || entry.passResult != orbit::PassSearchResult::Found) continue;
         if (best < 0 || entry.nextPass.riseTime < bestRise) {
             best = i;
             bestRise = entry.nextPass.riseTime;
@@ -117,7 +126,7 @@ int pickNextPass(Context* ctx) {
 void toggleToolbar(Context* ctx, bool fromKeys) {
     ctx->refocusMap = fromKeys;
     ctx->settings.hideToolbar = !ctx->settings.hideToolbar;
-    settingsSave(ctx->settings);
+    requestTaskWork(ctx, TASK_WORK_SETTINGS);
     showView(ctx, View::Map);
 }
 
@@ -163,7 +172,7 @@ void describeLegendValue(Context* ctx, const TrackedSatellite& entry, char* out,
         snprintf(out, outSize, "%.0f km", entry.position.altKm);
     } else if (entry.look.elevationDeg > 0.0) {
         snprintf(out, outSize, "up %.0f\xC2\xB0", entry.look.elevationDeg);
-    } else if (entry.passResult == orbit::PassSearchResult::Found) {
+    } else if (entry.passKnown && entry.passResult == orbit::PassSearchResult::Found) {
         formatClock(entry.nextPass.riseTime, out, outSize);
     } else {
         snprintf(out, outSize, "--");
@@ -176,7 +185,7 @@ void describePass(Context* ctx, const TrackedSatellite& entry, char* out, size_t
         return;
     }
     char rise[8], set[8];
-    bool passInProgress = entry.passResult == orbit::PassSearchResult::Found && entry.nextPass.riseTime <= currentTime();
+    bool passInProgress = entry.passKnown && entry.passResult == orbit::PassSearchResult::Found && entry.nextPass.riseTime <= currentTime();
     if (entry.look.elevationDeg > 0.0 && passInProgress) {
         formatClock(entry.nextPass.setTime, set, sizeof(set));
         if (compact) {
@@ -185,6 +194,10 @@ void describePass(Context* ctx, const TrackedSatellite& entry, char* out, size_t
             snprintf(out, outSize, "Above the horizon: %.0f°, azimuth %.0f° %s, sets %s", entry.look.elevationDeg,
                      entry.look.azimuthDeg, compassPoint(entry.look.azimuthDeg), set);
         }
+        return;
+    }
+    if (!entry.passKnown) {
+        snprintf(out, outSize, compact ? "Finding pass..." : "Finding the next pass...");
         return;
     }
     switch (entry.passResult) {
@@ -462,7 +475,6 @@ void mapViewUpdate(Context* ctx, bool force) {
     }
 
     ctx->model.updatePositions((double)now);
-    ctx->model.updatePasses(now, PASS_SEARCH_SECONDS);
     if (ctx->focusedIndex >= ctx->model.count()) ctx->focusedIndex = -1;
     ctx->autoIndex = pickNextPass(ctx);
     int focus = effectiveFocus(ctx);
@@ -527,6 +539,8 @@ void mapViewUpdate(Context* ctx, bool force) {
         } else if (!ctx->model.hasObserver()) {
             hint = w.detailed ? "No satellite selected. Set your location in the settings to select the next pass automatically."
                           : "Set location for automatic selection";
+        } else if (passSearchPending(ctx)) {
+            hint = "Finding the next pass...";
         } else {
             hint = w.detailed ? "No satellite selected and no pass higher than 5° in the next 36 hours." : "No pass in 36 h";
         }

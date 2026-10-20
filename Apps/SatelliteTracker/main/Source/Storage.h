@@ -24,6 +24,11 @@ struct Settings {
     bool hideToolbar = false;
     /** Follow Tactility's location service (GPS or network) when it has a fix. */
     bool useDeviceLocation = true;
+    /** Last device location, used at the start until the location service has a fix, so the passes do not change then. */
+    bool lastDeviceSet = false;
+    double lastDeviceLatDeg = 0.0;
+    double lastDeviceLonDeg = 0.0;
+    double lastDeviceAltM = 0.0;
     /** When orbit data of a tracked satellite was last downloaded. */
     int64_t lastTrackedRefresh = 0;
 };
@@ -31,6 +36,8 @@ struct Settings {
 bool storageEnsureDirectory();
 bool storageUserPath(const char* fileName, char* out, size_t outSize);
 bool storageAssetPath(const char* fileName, char* out, size_t outSize);
+/** Reads an asset file as text. Returns nullptr when it cannot be read, else a buffer to free with largeFree(). */
+char* storageReadAsset(const char* fileName);
 
 void settingsLoad(Settings& settings);
 void settingsSave(const Settings& settings);
@@ -40,10 +47,26 @@ void settingsSave(const Settings& settings);
  * restored without it. Returns false when no list was saved yet, which means the app starts for the first time.
  */
 bool trackedLoad(TrackerModel& model);
+
+/** The saved part of the tracked satellites. It is copied from the model with the LVGL lock held and written without it. */
+struct SavedSatellite {
+    uint32_t catalogNumber;
+    int slot;
+    char shortName[SHORT_NAME_LENGTH];
+    bool hasOrbit;
+    orbit::Tle tle;
+};
+
+struct SavedList {
+    int count = 0;
+    SavedSatellite entries[MAX_TRACKED] {};
+};
+
+void savedListFromModel(const TrackerModel& model, SavedList& out);
 /** Writes the list of tracked satellites: catalog number, slot and short name. */
-void trackedListSave(const TrackerModel& model);
+void trackedListSave(const SavedList& list);
 /** Writes the orbit data of the tracked satellites that have it. */
-void orbitCacheSave(const TrackerModel& model);
+void orbitCacheSave(const SavedList& list);
 
 /** Reads a CelesTrak TLE file (name line plus two element lines). Stops after maxEntries, which is also reserved up front. */
 bool tleFileRead(const char* path, TleList& out, size_t maxEntries);

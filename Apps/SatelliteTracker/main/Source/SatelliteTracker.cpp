@@ -6,6 +6,7 @@
 #include <lvgl/devices/keyboard.h>
 #include <lvgl/fonts.h>
 #include <lvgl/icons/shared.h>
+#include <lvgl/lvgl.h>
 #include <lvgl/widgets/toolbar.h>
 #include <tactility/device.h>
 #include <tactility/drivers/display.h>
@@ -108,8 +109,7 @@ void scheduleDownloads(Context* ctx) {
 void saveDownloads(Context* ctx) {
     if (!ctx->downloadsUnsaved) return;
     ctx->downloadsUnsaved = false;
-    orbitCacheSave(ctx->model);
-    settingsSave(ctx->settings);
+    requestTaskWork(ctx, TASK_WORK_ORBITS | TASK_WORK_SETTINGS);
 }
 
 void freeMarkerIcons(Context* ctx) {
@@ -142,7 +142,10 @@ void onBackClicked(lv_event_t* event) {
 }
 
 void onPassesClicked(lv_event_t* event) {
-    showView(static_cast<Context*>(lv_event_get_user_data(event)), View::Passes);
+    auto* ctx = static_cast<Context*>(lv_event_get_user_data(event));
+    ctx->passList.ready = false;
+    requestTaskWork(ctx, TASK_WORK_PASS_LIST);
+    showView(ctx, View::Passes);
 }
 
 void onSatellitesClicked(lv_event_t* event) {
@@ -171,6 +174,7 @@ void onUpdateTimer(lv_timer_t* timer) {
     auto* ctx = static_cast<Context*>(lv_timer_get_user_data(timer));
     if (window_manager_get_state(ctx->window) != WINDOW_STATE_GRANTED) return;
     scheduleDownloads(ctx);
+    if (timeIsValid() && ctx->model.passesStale(currentTime())) requestTaskWork(ctx, TASK_WORK_PASSES);
     if (ctx->view == View::Map) {
         mapViewUpdate(ctx, false);
     } else if (ctx->view == View::Settings) {
@@ -246,7 +250,7 @@ void onViewTimer(lv_timer_t* timer) {
     buildView(ctx);
 }
 
-void handleTrackedDownload(Context* ctx, const DownloadResult& result) {
+void handleTrackedDownload(Context* ctx, const DownloadResult& result, const TleList& tles) {
     uint32_t catalog = (uint32_t)strtoul(result.job.tag, nullptr, 10);
     int index = ctx->model.indexOfCatalog(catalog);
     int64_t now = currentTime();
@@ -260,9 +264,6 @@ void handleTrackedDownload(Context* ctx, const DownloadResult& result) {
         return;
     }
 
-    TleList tles;
-    tleFileRead(result.job.target, tles, 4);
-    remove(result.job.target);
     // The satellite may have been removed while its download was queued.
     if (index < 0) return;
 
@@ -287,36 +288,117 @@ void handleTrackedDownload(Context* ctx, const DownloadResult& result) {
     }
 }
 
+/** A group or search download still belongs to the screen that asked for it. */
+bool catalogDownloadIsCurrent(const Context* ctx, const DownloadJob& job) {
+    if (job.kind == DownloadKind::Group) {
+        return ctx->view == View::GroupList && strcmp(ctx->selectedGroup, job.tag) == 0;
+    }
+    DownloadJob expected;
+    return ctx->view == View::Search && Downloader::buildSearchJob(ctx->searchText, expected) && strcmp(expected.tag, job.tag) == 0;
+}
+
+/** After a failed download a group falls back to its saved copy, which a failed download leaves untouched. */
+bool catalogDownloadIsUsable(const DownloadResult& result) {
+    return result.success || result.job.kind == DownloadKind::Group;
+}
+
 /** Fills the catalog from a group or search download, when it still belongs to the screen that asked for it. */
-void handleCatalogDownload(Context* ctx, const DownloadResult& result) {
-    bool current;
-    size_t maxEntries;
-    if (result.job.kind == DownloadKind::Group) {
-        current = ctx->view == View::GroupList && strcmp(ctx->selectedGroup, result.job.tag) == 0;
-        maxEntries = ctx->groupLimit;
-    } else {
-        DownloadJob expected;
-        current = ctx->view == View::Search && Downloader::buildSearchJob(ctx->searchText, expected) && strcmp(expected.tag, result.job.tag) == 0;
-        maxEntries = ctx->searchLimit;
-    }
-    if (!current) return;
+void handleCatalogDownload(Context* ctx, const DownloadResult& result, TleList& tles) {
+    if (!catalogDownloadIsCurrent(ctx, result.job)) return;
     ctx->catalogLoading = false;
-    // After a failed download a group falls back to its saved copy, which a failed download leaves untouched.
-    bool fallback = !result.success && result.job.kind == DownloadKind::Group;
-    if (result.success || fallback) {
-        tleFileRead(result.job.target, ctx->catalog, maxEntries);
-        sortByName(ctx->catalog);
-    }
+    bool fallback = !result.success && catalogDownloadIsUsable(result);
+    if (catalogDownloadIsUsable(result)) ctx->catalog.swap(tles);
     catalogViewRefresh(ctx);
     if (fallback && !ctx->catalog.empty()) {
         setLabelText(ctx->messageLabel, "Download failed, this is the saved copy of the group.");
     }
 }
 
+/** Main task: shows the saved copy of a group when it is recent, else downloads the group with the saved copy as fallback. */
+void loadGroup(Context* ctx, const char* groupId) {
+    char name[48], path[256];
+    snprintf(name, sizeof(name), "group-%s.tle", groupId);
+    int64_t age = storageUserPath(name, path, sizeof(path)) ? fileAgeSeconds(path, currentTime()) : -1;
+    bool fresh = age >= 0 && (age < GROUP_CACHE_SECONDS || !timeIsValid());
+    TleList tles;
+    if (fresh) tleFileRead(path, tles, ctx->groupLimit);
+    bool queued = false;
+    if (!fresh || tles.empty()) {
+        DownloadJob job;
+        queued = timeIsValid() && Downloader::buildGroupJob(groupId, job) &&
+            (ctx->downloader.hasQueued(DownloadKind::Group, job.tag) || ctx->downloader.enqueue(job));
+        if (!queued && !fresh && age >= 0) tleFileRead(path, tles, ctx->groupLimit);
+    }
+    sortByName(tles);
+
+    lvgl_lock();
+    if (ctx->pendingView == View::GroupList && strcmp(ctx->selectedGroup, groupId) == 0) {
+        ctx->catalog.swap(tles);
+        ctx->catalogReading = false;
+        ctx->catalogLoading = queued;
+        catalogViewRefresh(ctx);
+    }
+    lvgl_unlock();
+}
+
+/** Main task: the pass search takes seconds on chips without a double precision FPU, so it runs without the LVGL lock. */
+void searchPasses(Context* ctx) {
+    if (!timeIsValid()) return;
+    lvgl_lock();
+    bool collected = ctx->model.collectPassJobs(currentTime(), ctx->passJobs);
+    lvgl_unlock();
+    if (!collected) return;
+    TrackerModel::runPassJobs(ctx->passJobs, PASS_SEARCH_SECONDS);
+    lvgl_lock();
+    if (ctx->model.applyPassJobs(ctx->passJobs)) ctx->forceRedraw = true;
+    lvgl_unlock();
+}
+
+}
+
+void requestTaskWork(Context* ctx, uint32_t work) {
+    ctx->taskWork |= work;
+    task_event_group_signal(ctx->eventGroup, ctx->taskWorkBit);
+}
+
+void satelliteTrackerDoTaskWork(Context* ctx) {
+    lvgl_lock();
+    uint32_t work = ctx->taskWork;
+    ctx->taskWork = 0;
+    Settings settings = ctx->settings;
+    if (work & (TASK_WORK_LIST | TASK_WORK_ORBITS)) savedListFromModel(ctx->model, ctx->savedList);
+    char group[sizeof(ctx->selectedGroup)];
+    memcpy(group, ctx->selectedGroup, sizeof(group));
+    lvgl_unlock();
+
+    if (work & TASK_WORK_SETTINGS) settingsSave(settings);
+    if (work & TASK_WORK_LIST) trackedListSave(ctx->savedList);
+    if (work & TASK_WORK_ORBITS) orbitCacheSave(ctx->savedList);
+    if (work & TASK_WORK_GROUP) loadGroup(ctx, group);
+    if (work & TASK_WORK_PASSES) searchPasses(ctx);
+    if (work & TASK_WORK_PASS_LIST) satelliteTrackerBuildPassList(ctx);
+}
+
+void satelliteTrackerReadDownload(Context* ctx, const DownloadResult& result, TleList& out) {
+    if (result.job.kind == DownloadKind::Tracked) {
+        if (!result.success) return;
+        tleFileRead(result.job.target, out, 4);
+        remove(result.job.target);
+        return;
+    }
+    if (!catalogDownloadIsUsable(result)) return;
+    lvgl_lock();
+    bool current = catalogDownloadIsCurrent(ctx, result.job);
+    lvgl_unlock();
+    if (!current) return;
+    tleFileRead(result.job.target, out, result.job.kind == DownloadKind::Group ? ctx->groupLimit : ctx->searchLimit);
+    sortByName(out);
 }
 
 void applyObserver(Context* ctx) {
-    if (ctx->settings.useDeviceLocation && ctx->deviceFixValid) {
+    // Until the location service has a fix, deviceFix holds the last device location
+    bool lastKnown = ctx->settings.lastDeviceSet && location_is_enabled();
+    if (ctx->settings.useDeviceLocation && (ctx->deviceFixValid || lastKnown)) {
         ctx->model.setObserver(true, ctx->deviceFix);
         return;
     }
@@ -332,12 +414,21 @@ void satelliteTrackerSetDeviceLocation(Context* ctx, const Location* fix) {
         ctx->deviceAccuracyM = fix->horizontal_accuracy;
         snprintf(ctx->deviceProvider, sizeof(ctx->deviceProvider), "%s", fix->provider);
         // Movements below about 1 km are ignored, so GPS noise does not recalculate the passes every second.
-        bool moved = !ctx->deviceFixValid || std::fabs(fix->latitude - ctx->deviceFix.latDeg) > 0.01 ||
+        bool known = ctx->deviceFixValid || ctx->settings.lastDeviceSet;
+        bool moved = !known || std::fabs(fix->latitude - ctx->deviceFix.latDeg) > 0.01 ||
             std::fabs(fix->longitude - ctx->deviceFix.lonDeg) > 0.01;
-        if (!moved) return;
-        double altitudeM = std::isnan(fix->altitude) ? 0.0 : fix->altitude;
-        ctx->deviceFix = orbit::Geodetic { fix->latitude, fix->longitude, altitudeM / 1000.0 };
+        bool wasValid = ctx->deviceFixValid;
         ctx->deviceFixValid = true;
+        if (!moved && wasValid) return;
+        if (moved) {
+            double altitudeM = std::isnan(fix->altitude) ? 0.0 : fix->altitude;
+            ctx->deviceFix = orbit::Geodetic { fix->latitude, fix->longitude, altitudeM / 1000.0 };
+            ctx->settings.lastDeviceSet = true;
+            ctx->settings.lastDeviceLatDeg = fix->latitude;
+            ctx->settings.lastDeviceLonDeg = fix->longitude;
+            ctx->settings.lastDeviceAltM = altitudeM;
+            requestTaskWork(ctx, TASK_WORK_SETTINGS);
+        }
     }
     applyObserver(ctx);
     ctx->forceRedraw = true;
@@ -353,7 +444,7 @@ int effectiveFocus(const Context* ctx) {
 int addTracked(Context* ctx, const orbit::Tle& tle) {
     int index = ctx->model.add(tle, nullptr);
     if (index < 0) return -1;
-    trackedListSave(ctx->model);
+    requestTaskWork(ctx, TASK_WORK_LIST);
     // The orbit data comes from a group or search download and goes into the cache with the next save.
     ctx->downloadsUnsaved = true;
     ctx->autoIndex = -1;
@@ -363,7 +454,7 @@ int addTracked(Context* ctx, const orbit::Tle& tle) {
 
 void removeTracked(Context* ctx, int index) {
     ctx->model.remove(index);
-    trackedListSave(ctx->model);
+    requestTaskWork(ctx, TASK_WORK_LIST);
     if (ctx->focusedIndex == index) ctx->focusedIndex = -1;
     else if (ctx->focusedIndex > index) ctx->focusedIndex--;
     ctx->autoIndex = -1;
@@ -465,6 +556,19 @@ lv_obj_t* createMarkerImage(Context* ctx, lv_obj_t* parent, int slot) {
     return canvas;
 }
 
+void satelliteTrackerLoad(Context* ctx) {
+    storageEnsureDirectory();
+    settingsLoad(ctx->settings);
+    if (!trackedLoad(ctx->model)) {
+        // First start: the list is saved right away, the orbit data follows when the network is available.
+        for (const auto& satellite : DEFAULT_SATELLITES) {
+            ctx->model.add(satellite.catalogNumber, satellite.shortName, -1, true);
+        }
+        savedListFromModel(ctx->model, ctx->savedList);
+        trackedListSave(ctx->savedList);
+    }
+}
+
 void satelliteTrackerInit(Context* ctx) {
     DisplayInfo display { false, false, false };
     device_for_each_of_type(&DISPLAY_TYPE, &display, onDisplayFound);
@@ -475,20 +579,17 @@ void satelliteTrackerInit(Context* ctx) {
         ctx->groupLimit = 150;
         ctx->searchLimit = 60;
     }
-
-    settingsLoad(ctx->settings);
-    if (!trackedLoad(ctx->model)) {
-        // First start: the list is saved right away, the orbit data follows when the network is available.
-        for (const auto& satellite : DEFAULT_SATELLITES) {
-            ctx->model.add(satellite.catalogNumber, satellite.shortName, -1, true);
-        }
-        trackedListSave(ctx->model);
+    if (ctx->settings.lastDeviceSet) {
+        ctx->deviceFix = orbit::Geodetic { ctx->settings.lastDeviceLatDeg, ctx->settings.lastDeviceLonDeg, ctx->settings.lastDeviceAltM / 1000.0 };
     }
+
     applyObserver(ctx);
     ctx->focusedIndex = (ctx->settings.autoSelectPass || ctx->model.count() == 0) ? -1 : 0;
+    requestTaskWork(ctx, TASK_WORK_PASSES);
 }
 
 void satelliteTrackerTeardown(Context* ctx) {
+    ctx->taskWork &= ~(TASK_WORK_GROUP | TASK_WORK_PASSES | TASK_WORK_PASS_LIST);
     saveDownloads(ctx);
     freeMarkerIcons(ctx);
 }
@@ -550,7 +651,7 @@ bool requestTrackedRefresh(Context* ctx, int64_t minAgeSeconds) {
     return queueRefresh(ctx, !recent, true);
 }
 
-void satelliteTrackerHandleDownload(Context* ctx, const DownloadResult& result) {
+void satelliteTrackerHandleDownload(Context* ctx, const DownloadResult& result, TleList& tles) {
     if (!result.success) {
         char text[96];
         if (result.statusCode != 0) {
@@ -561,9 +662,9 @@ void satelliteTrackerHandleDownload(Context* ctx, const DownloadResult& result) 
         setStatus(ctx, text);
     }
     if (result.job.kind == DownloadKind::Tracked) {
-        handleTrackedDownload(ctx, result);
+        handleTrackedDownload(ctx, result, tles);
     } else {
-        handleCatalogDownload(ctx, result);
+        handleCatalogDownload(ctx, result, tles);
     }
     if (!ctx->downloader.isBusy()) saveDownloads(ctx);
 }

@@ -24,7 +24,11 @@ int main(int argc, char* argv[]) {
     struct AppEventSubscription sub {};
     check(app_event_subscribe(&sub, &event_group) == ERROR_NONE);
 
+    ctx->eventGroup = &event_group;
+    check(task_event_group_claim_bit(&event_group, &ctx->taskWorkBit) == ERROR_NONE);
+
     bool downloads_ready = ctx->downloader.init(&event_group);
+    satelliteTrackerLoad(ctx.get());
 
     lvgl_lock();
     satelliteTrackerInit(ctx.get());
@@ -52,19 +56,26 @@ int main(int argc, char* argv[]) {
         if (downloads_ready) {
             DownloadResult result;
             while (ctx->downloader.process(result)) {
+                TleList tles;
+                satelliteTrackerReadDownload(ctx.get(), result, tles);
                 lvgl_lock();
-                satelliteTrackerHandleDownload(ctx.get(), result);
+                satelliteTrackerHandleDownload(ctx.get(), result, tles);
                 lvgl_unlock();
             }
         }
 
-        device_location.update(&event_group, ctx->settings.useDeviceLocation);
+        satelliteTrackerDoTaskWork(ctx.get());
+
+        lvgl_lock();
+        bool use_device_location = ctx->settings.useDeviceLocation;
+        lvgl_unlock();
+        device_location.update(&event_group, use_device_location);
         Location fix;
         if (device_location.poll(fix)) {
             lvgl_lock();
             satelliteTrackerSetDeviceLocation(ctx.get(), &fix);
             lvgl_unlock();
-        } else if (!device_location.isActive() && ctx->deviceFixValid) {
+        } else if (!device_location.isActive()) {
             lvgl_lock();
             satelliteTrackerSetDeviceLocation(ctx.get(), nullptr);
             lvgl_unlock();
@@ -74,11 +85,13 @@ int main(int argc, char* argv[]) {
 
     window_manager_remove(window);
     ctx->downloader.deinit();
-    check(app_event_unsubscribe(&sub) == ERROR_NONE);
-    task_event_group_destruct(&event_group);
     lvgl_lock();
     satelliteTrackerTeardown(ctx.get());
     lvgl_unlock();
+    satelliteTrackerDoTaskWork(ctx.get());
+    task_event_group_release_bit(&event_group, ctx->taskWorkBit);
+    check(app_event_unsubscribe(&sub) == ERROR_NONE);
+    task_event_group_destruct(&event_group);
 
     return 0;
 }

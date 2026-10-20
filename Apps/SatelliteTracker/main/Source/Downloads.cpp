@@ -11,10 +11,6 @@ namespace {
 constexpr const char* BASE_URL = "https://celestrak.org/NORAD/elements/gp.php";
 constexpr const char* CERTIFICATE_FILE = "celestrak.pem";
 
-bool userFile(const char* name, char* out, size_t outSize) {
-    return storageEnsureDirectory() && storageUserPath(name, out, outSize);
-}
-
 void partFile(const char* target, char* out, size_t outSize) {
     snprintf(out, outSize, "%s.part", target);
 }
@@ -34,8 +30,8 @@ bool Downloader::init(TaskEventGroup* eventGroup) {
     if (task_event_group_claim_bit(group, &wakeBit) != ERROR_NONE) return false;
     mutex = xSemaphoreCreateMutex();
     if (mutex == nullptr) return false;
-    storageAssetPath(CERTIFICATE_FILE, certificatePath, sizeof(certificatePath));
-    return true;
+    certificate = storageReadAsset(CERTIFICATE_FILE);
+    return certificate != nullptr;
 }
 
 void Downloader::deinit() {
@@ -48,6 +44,8 @@ void Downloader::deinit() {
         vSemaphoreDelete(mutex);
         mutex = nullptr;
     }
+    largeFree(certificate);
+    certificate = nullptr;
     if (group != nullptr && wakeBit != 0) {
         task_event_group_release_bit(group, wakeBit);
         wakeBit = 0;
@@ -118,7 +116,7 @@ bool Downloader::process(DownloadResult& out) {
     bool started = http_download_subscribe(&subscription, group) == ERROR_NONE;
     char partPath[sizeof(current.target) + 8];
     partFile(current.target, partPath, sizeof(partPath));
-    if (started && http_download_start(current.url, certificatePath, partPath, &subscription) != ERROR_NONE) {
+    if (started && http_download_start(current.url, certificate, partPath, &subscription) != ERROR_NONE) {
         http_download_unsubscribe(&subscription);
         started = false;
     }
@@ -144,7 +142,7 @@ bool Downloader::buildCatalogJob(uint32_t catalogNumber, DownloadJob& out) {
     snprintf(out.url, sizeof(out.url), "%s?CATNR=%u&FORMAT=tle", BASE_URL, (unsigned)catalogNumber);
     char name[32];
     snprintf(name, sizeof(name), "sat-%u.tle", (unsigned)catalogNumber);
-    return userFile(name, out.target, sizeof(out.target));
+    return storageUserPath(name, out.target, sizeof(out.target));
 }
 
 bool Downloader::buildGroupJob(const char* groupId, DownloadJob& out) {
@@ -154,7 +152,7 @@ bool Downloader::buildGroupJob(const char* groupId, DownloadJob& out) {
     snprintf(out.url, sizeof(out.url), "%s?GROUP=%s&FORMAT=tle", BASE_URL, groupId);
     char name[48];
     snprintf(name, sizeof(name), "group-%s.tle", groupId);
-    return userFile(name, out.target, sizeof(out.target));
+    return storageUserPath(name, out.target, sizeof(out.target));
 }
 
 bool Downloader::buildSearchJob(const char* text, DownloadJob& out) {
@@ -189,5 +187,5 @@ bool Downloader::buildSearchJob(const char* text, DownloadJob& out) {
         written += snprintf(out.url + written, sizeof(out.url) - written, "%s", SUFFIX);
     }
     if (written >= (int)sizeof(out.url)) return false;
-    return userFile("search.tle", out.target, sizeof(out.target));
+    return storageUserPath("search.tle", out.target, sizeof(out.target));
 }
